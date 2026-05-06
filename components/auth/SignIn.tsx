@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Mail, Lock, ArrowRight, Shield } from 'lucide-react';
-import { supabase } from '../../lib/supabase';
+import { insforge } from '../../lib/insforge';
 
 interface SignInProps {
   onSignIn: () => void;
@@ -19,18 +19,18 @@ const SignIn: React.FC<SignInProps> = ({ onSignIn, onSwitchToSignUp }) => {
     setError(null);
 
     try {
-      const { data, error: signInError } = await supabase.auth.signInWithPassword({
+      const { data, error: signInError } = await insforge.auth.signInWithPassword({
         email,
         password,
       });
 
       if (signInError) {
-        setError(signInError.message);
+        setError(signInError.message || 'Sign in failed. Please check your credentials.');
         setLoading(false);
         return;
       }
 
-      if (data.user) {
+      if (data?.accessToken) {
         onSignIn();
       }
     } catch (err) {

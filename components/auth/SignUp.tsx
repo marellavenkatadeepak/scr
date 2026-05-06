@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Mail, Lock, ArrowRight, Shield, User } from 'lucide-react';
-import { supabase } from '../../lib/supabase';
+import { insforge } from '../../lib/insforge';
 
 interface SignUpProps {
   onSignUp: () => void;
@@ -34,18 +34,18 @@ const SignUp: React.FC<SignUpProps> = ({ onSignUp, onSwitchToSignIn }) => {
     }
 
     try {
-      const { data, error: signUpError } = await supabase.auth.signUp({
+      const { data, error: signUpError } = await insforge.auth.signUp({
         email,
         password,
       });
 
       if (signUpError) {
-        setError(signUpError.message);
+        setError(signUpError.message || 'Sign up failed. Please try again.');
         setLoading(false);
         return;
       }
 
-      if (data.user) {
+      if (data?.user) {
         setSuccess(true);
         // Auto sign in after successful sign up
         setTimeout(() => {

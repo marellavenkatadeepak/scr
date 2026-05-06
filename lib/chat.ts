@@ -1,5 +1,5 @@
-// Real-time chat storage utilities using Supabase
-import { supabase } from './supabase';
+// Real-time chat storage utilities using InsForge
+import { insforge } from './insforge';
 
 export interface ChatMessage {
   id: string;
@@ -20,7 +20,6 @@ export interface ChatUser {
 }
 
 const COMPANY_CHAT_TABLE = 'company_chat_messages';
-const COMPANY_USERS_TABLE = 'company_active_users';
 
 // Helper to format timestamp
 const formatTimestamp = (date: Date): string => {
@@ -53,17 +52,15 @@ const dbRowToMessage = (row: any): ChatMessage => {
  */
 export const getCompanyChatMessages = async (companyId: string, limit: number = 100): Promise<ChatMessage[]> => {
   try {
-    // Try Supabase first
-    const { data, error } = await supabase
+    const { data, error } = await insforge.database
       .from(COMPANY_CHAT_TABLE)
-      .select('*')
+      .select()
       .eq('company_id', companyId)
       .order('created_at', { ascending: false })
       .limit(limit);
 
     if (error) {
       console.error('Error fetching chat messages:', error);
-      // Fallback to localStorage
       return getChatMessagesFromLocalStorage(companyId);
     }
 
@@ -75,7 +72,7 @@ export const getCompanyChatMessages = async (companyId: string, limit: number = 
 };
 
 /**
- * Add a chat message
+ * Add a chat message and publish it via InsForge Realtime
  */
 export const addChatMessage = async (
   companyId: string,
@@ -85,39 +82,57 @@ export const addChatMessage = async (
   content: string
 ): Promise<ChatMessage | null> => {
   try {
-    const message: ChatMessage = {
-      id: Date.now().toString(),
-      companyId,
-      userId,
-      userName,
-      userInitials,
-      content,
-      timestamp: new Date(),
-    };
-
-    // Try Supabase first
-    const { data, error } = await supabase
+    const { data, error } = await insforge.database
       .from(COMPANY_CHAT_TABLE)
-      .insert({
-        company_id: companyId,
-        user_id: userId,
-        user_name: userName,
-        user_initials: userInitials,
-        content: content,
-      })
-      .select()
-      .single();
+      .insert([
+        {
+          company_id: companyId,
+          user_id: userId,
+          user_name: userName,
+          user_initials: userInitials,
+          content: content,
+        },
+      ])
+      .select();
 
     if (error) {
       console.error('Error adding chat message:', error);
-      // Fallback to localStorage
-      return addChatMessageToLocalStorage(message);
+      const fallbackMessage: ChatMessage = {
+        id: Date.now().toString(),
+        companyId,
+        userId,
+        userName,
+        userInitials,
+        content,
+        timestamp: new Date(),
+      };
+      return addChatMessageToLocalStorage(fallbackMessage);
     }
 
-    return data ? dbRowToMessage(data) : null;
+    const savedMessage = data && data[0] ? dbRowToMessage(data[0]) : null;
+
+    // Publish the new message to InsForge Realtime so other clients receive it
+    if (savedMessage) {
+      try {
+        await insforge.realtime.publish(`company-chat-${companyId}`, 'new_message', {
+          id: savedMessage.id,
+          company_id: companyId,
+          user_id: userId,
+          user_name: userName,
+          user_initials: userInitials,
+          content: content,
+          created_at: savedMessage.timestamp.toISOString(),
+        });
+      } catch (realtimeErr) {
+        // Non-fatal — message was saved to DB, realtime publish just failed
+        console.warn('Realtime publish failed:', realtimeErr);
+      }
+    }
+
+    return savedMessage;
   } catch (error) {
     console.error('Error adding chat message:', error);
-    const message: ChatMessage = {
+    const fallbackMessage: ChatMessage = {
       id: Date.now().toString(),
       companyId,
       userId,
@@ -126,42 +141,60 @@ export const addChatMessage = async (
       content,
       timestamp: new Date(),
     };
-    return addChatMessageToLocalStorage(message);
+    return addChatMessageToLocalStorage(fallbackMessage);
   }
 };
 
 /**
- * Subscribe to real-time chat updates
+ * Subscribe to real-time chat updates via InsForge Realtime
+ * Returns an unsubscribe function.
  */
 export const subscribeToChatMessages = (
   companyId: string,
   callback: (message: ChatMessage) => void
 ): (() => void) => {
-  try {
-    const channel = supabase
-      .channel(`company-chat-${companyId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: COMPANY_CHAT_TABLE,
-          filter: `company_id=eq.${companyId}`,
-        },
-        (payload) => {
-          const message = dbRowToMessage(payload.new);
-          callback(message);
-        }
-      )
-      .subscribe();
+  const channel = `company-chat-${companyId}`;
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  } catch (error) {
-    console.error('Error setting up chat subscription:', error);
-    return () => {}; // Return empty cleanup function
-  }
+  // Connect and subscribe asynchronously
+  (async () => {
+    try {
+      await insforge.realtime.connect();
+      const result = await insforge.realtime.subscribe(channel);
+      if (!result.ok) {
+        const errorResult = result as { ok: false; error: { message: string } };
+        console.error('Failed to subscribe to chat channel:', errorResult.error.message);
+        return;
+      }
+    } catch (err) {
+      console.error('Error connecting to InsForge Realtime:', err);
+    }
+  })();
+
+  // Listen for new_message events on this channel
+  insforge.realtime.on('new_message', (payload: any) => {
+    // The payload includes the channel; filter for this company's channel
+    if (payload && (payload.company_id === companyId || !payload.company_id)) {
+      const message: ChatMessage = {
+        id: payload.id || Date.now().toString(),
+        companyId: payload.company_id || companyId,
+        userId: payload.user_id || '',
+        userName: payload.user_name || 'Anonymous',
+        userInitials: payload.user_initials || 'A',
+        content: payload.content || '',
+        timestamp: payload.created_at ? new Date(payload.created_at) : new Date(),
+      };
+      callback(message);
+    }
+  });
+
+  // Return cleanup function
+  return () => {
+    try {
+      insforge.realtime.unsubscribe(channel);
+    } catch (err) {
+      console.warn('Error unsubscribing from chat channel:', err);
+    }
+  };
 };
 
 // LocalStorage fallback functions
@@ -193,25 +226,24 @@ const addChatMessageToLocalStorage = (message: ChatMessage): ChatMessage => {
 };
 
 /**
- * Get active users for a company from Supabase (from chat messages, posts, and user_companies)
+ * Get active users for a company from InsForge (from chat messages, posts, and user_companies)
  */
 export const getActiveUsers = async (companyId: string): Promise<ChatUser[]> => {
   try {
     const userMap = new Map<string, ChatUser>();
 
-    // First, try to get users from user_companies table (most reliable)
-    const { data: userCompaniesData, error: userCompaniesError } = await supabase
+    // Get users from user_companies table
+    const { data: userCompaniesData, error: userCompaniesError } = await insforge.database
       .from('user_companies')
-      .select('user_id, company_name')
+      .select()
       .eq('company_id', companyId);
 
     if (!userCompaniesError && userCompaniesData) {
-      // We have user_ids but need to get names/initials from other sources
       userCompaniesData.forEach((row: any) => {
         if (row.user_id && !userMap.has(row.user_id)) {
           userMap.set(row.user_id, {
             id: row.user_id,
-            name: 'User', // Will be updated from posts/messages
+            name: 'User',
             initials: 'U',
             isOnline: false,
           });
@@ -220,7 +252,7 @@ export const getActiveUsers = async (companyId: string): Promise<ChatUser[]> => 
     }
 
     // Get users from chat messages
-    const { data: chatData, error: chatError } = await supabase
+    const { data: chatData, error: chatError } = await insforge.database
       .from(COMPANY_CHAT_TABLE)
       .select('user_id, user_name, user_initials, created_at')
       .eq('company_id', companyId)
@@ -231,7 +263,6 @@ export const getActiveUsers = async (companyId: string): Promise<ChatUser[]> => 
         if (row.user_id) {
           const existing = userMap.get(row.user_id);
           if (existing) {
-            // Update existing user with better info
             existing.name = row.user_name || existing.name || 'Anonymous';
             existing.initials = row.user_initials || existing.initials || 'A';
             existing.lastSeen = new Date(row.created_at);
@@ -249,11 +280,11 @@ export const getActiveUsers = async (companyId: string): Promise<ChatUser[]> => 
     }
 
     // Get users from posts
-    const { data: postData, error: postError } = await supabase
+    const { data: postData, error: postError } = await insforge.database
       .from('company_posts')
       .select('user_id, user_name, user_initials, created_at')
       .eq('company_id', companyId)
-      .not('user_id', 'is', null)
+      .neq('user_id', null)
       .order('created_at', { ascending: false });
 
     if (!postError && postData) {
@@ -261,7 +292,6 @@ export const getActiveUsers = async (companyId: string): Promise<ChatUser[]> => 
         if (row.user_id) {
           const existing = userMap.get(row.user_id);
           if (existing) {
-            // Update existing user with better info
             existing.name = row.user_name || existing.name || 'Anonymous';
             existing.initials = row.user_initials || existing.initials || 'A';
             if (!existing.lastSeen || new Date(row.created_at) > existing.lastSeen) {
@@ -281,17 +311,15 @@ export const getActiveUsers = async (companyId: string): Promise<ChatUser[]> => 
     }
 
     const users = Array.from(userMap.values());
-    
+
     // Merge with localStorage active users (for online status)
     const localUsers = getActiveUsersFromLocalStorage(companyId);
-    const localUserMap = new Map(localUsers.map(u => [u.id, u]));
-    
-    // Update online status from localStorage
-    users.forEach(user => {
+    const localUserMap = new Map(localUsers.map((u) => [u.id, u]));
+
+    users.forEach((user) => {
       const localUser = localUserMap.get(user.id);
       if (localUser) {
         user.isOnline = localUser.isOnline;
-        // Use localStorage name if it's better
         if (localUser.name && localUser.name !== 'User' && localUser.name !== 'Anonymous') {
           user.name = localUser.name;
           user.initials = localUser.initials;
@@ -299,8 +327,7 @@ export const getActiveUsers = async (companyId: string): Promise<ChatUser[]> => 
       }
     });
 
-    // Add any local users not in database (for current session)
-    localUsers.forEach(localUser => {
+    localUsers.forEach((localUser) => {
       if (!userMap.has(localUser.id)) {
         users.push(localUser);
       }
@@ -348,4 +375,3 @@ export const updateActiveUser = (companyId: string, user: ChatUser): void => {
     console.error('Error updating active user:', error);
   }
 };
-

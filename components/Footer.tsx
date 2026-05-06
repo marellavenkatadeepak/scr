@@ -15,7 +15,7 @@ const Footer: React.FC = () => {
               Empowering employees to create better workplaces through safe, anonymous, and verified feedback.
             </p>
             <div className="inline-flex items-center px-3 py-1 rounded-full bg-slate-800 border border-slate-700 text-xs font-mono text-emerald-400">
-              🔒 Secured by Supabase
+              🔒 Secured by InsForge
             </div>
           </div>
 

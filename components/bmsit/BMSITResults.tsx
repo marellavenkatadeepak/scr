@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { GraduationCap, TrendingUp, Users, BarChart3, ArrowLeft } from 'lucide-react';
-import { getBMSITSurveys } from '../../lib/storage';
+import { getBMSITSurveys, QUESTION_LABELS } from '../../lib/storage';
 
 interface SurveyData {
   timestamp: string;
@@ -11,17 +11,6 @@ interface BMSITResultsProps {
   onBack: () => void;
 }
 
-const QUESTION_LABELS: Record<number, string> = {
-  1: "Overall Teaching Experience",
-  2: "Administration Support",
-  3: "Infrastructure & Facilities",
-  4: "Student Interaction",
-  5: "Professional Development",
-  6: "Work-Life Balance",
-  7: "Compensation & Benefits",
-  8: "Communication & Transparency",
-  9: "Academic Resources",
-};
 
 const BMSITResults: React.FC<BMSITResultsProps> = ({ onBack }) => {
   const [surveyData, setSurveyData] = useState<SurveyData[]>([]);
@@ -29,7 +18,7 @@ const BMSITResults: React.FC<BMSITResultsProps> = ({ onBack }) => {
 
   useEffect(() => {
     const loadSurveyData = async () => {
-      // Load survey data from Supabase
+    // Load survey data from InsForge
       const data = await getBMSITSurveys();
       setSurveyData(data);
       
@@ -69,7 +58,7 @@ const BMSITResults: React.FC<BMSITResultsProps> = ({ onBack }) => {
   const getAverageRating = () => {
     const allAverages = Object.values(averages);
     if (allAverages.length === 0) return 0;
-    const total = allAverages.reduce((sum, val) => sum + val, 0);
+    const total = (allAverages as number[]).reduce((sum, val) => sum + val, 0);
     return Math.round((total / allAverages.length) * 100) / 100;
   };
 
